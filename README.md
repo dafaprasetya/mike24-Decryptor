@@ -40,8 +40,8 @@ reads the header of **every** file, so it never guesses from the file size alone
 | File type | Result |
 |---|---|
 | ZIP / XLSX / DOCX / PPTX / ODT … | Every inner file that is still intact is extracted (CRC-verified). Files stored inside the first 4 MB are lost. |
-| RAR (RAR4 / RAR5) | The intact entries are re-packed into a new `*_RECOVERED.rar`; open it with WinRAR or 7-Zip. **Solid** archives cannot be salvaged this way and are flagged. |
-| Access (`.mdb` `.mde` `.accdb` `.accde`) | The file is rebuilt at its original offsets with the encrypted zones filled with zeros. The schema pages at the start are lost, so the result needs an Access repair / table-extraction step. |
+| RAR (RAR4 / RAR5) | The intact entries are re-packed into a new `*_RECOVERED.rar` that extracts without errors in WinRAR / 7-Zip. Entries cut by the encrypted end are left out and listed in the report. **Solid** archives cannot be salvaged this way and are flagged. |
+| Access (`.mdb` `.mde` `.accdb` `.accde`) | Every table that is still readable is written to CSV (`<name>_tables\`), and on Windows an **open-able copy `<name>_RECOVERED.mdb`** is built from it (see [Access databases](#access-databases)). The zero-filled rebuild is also kept, but Access cannot open it: its first pages (header and table catalog) are lost. |
 | Anything else | Rebuilt the same way (encrypted zones = zeros). Useful for databases, disk images, video, large logs, etc. |
 
 ## Download
@@ -57,8 +57,8 @@ Get-FileHash .\mike24_recovery.exe -Algorithm SHA256
 
 | File | Version | SHA-256 |
 |---|---|---|
-| `mike24_recovery.exe` | 3.1 | `4e4bba35389c1c9dedd9653004d301a4906cc4fcb37d714df66cf438995041e2` |
-| `mike24_recovery.py` | 3.1 | `1aafaebbaec8a9590c86c8cf5823a318b189416f39f05ba4c4abd5ea4c29f0d8` |
+| `mike24_recovery.exe` | 3.2 | `fb3f75be7fac472c6e80cf64f7c62145cb66e4c2fe0e5affa3138be294dddce3` |
+| `mike24_recovery.py` | 3.2 | `342dc4bdb3a80dd770271b41aa90aaf14bc93bec53d44727e8618363702162a5` |
 
 The `.exe` is a PyInstaller build of `mike24_recovery.py` and is **not code-signed**. Some antivirus engines flag
 unsigned PyInstaller executables. If that happens, run the Python script instead (below) or build the `.exe` yourself.
@@ -91,6 +91,51 @@ mike24_recovery.exe "D:\data" "D:\recovered" --on-disk
 
 Double-clicking the `.exe` without arguments shows the help screen.
 
+## Access databases
+
+A partially encrypted Access file loses its first ~4 MB: the header page, the table catalog and most table
+definitions. That is why Access says **"Unrecognized database format"**, and why *Compact & Repair* does not help.
+The data pages in the middle are still there. Version 3.2 reads them directly:
+
+1. **Tables to CSV** - one CSV per table in `<name>_tables\` (UTF-8, opens in Excel), plus `_tables.txt`
+   (rows per table, how the columns were identified) and `_schema.json`.
+2. **Open-able copy** - on Windows the tool then builds **`<name>_RECOVERED.mdb`** from those CSV files with the
+   Access / Jet database engine that is already installed (64-bit Office engine if present, otherwise the 32-bit Jet
+   4.0 engine built into Windows). This new database opens normally in Access.
+
+Column names and types come from, in this order:
+
+| Source | Column names | When |
+|---|---|---|
+| Table definition still intact in the file | real | definition was stored after the first 4 MB |
+| `--mdb-template` | real | definition lost; a healthy database of the **same application** is given |
+| Guessed from the rows | `f4_date`, `f12_int32`, `var3`, ... | definition lost and no template |
+
+**Use a template whenever possible.** Any undamaged copy of a database made by the same program works, even an
+empty one or an older version: the installation folder of the application, another branch, an old backup.
+With a template, `<name>_RECOVERED.*` is a copy of the template (same tables, queries, forms, relationships) in which
+the recovered rows replace the rows of the matching tables. Newer columns that the template does not have are added
+(names start with `extra_`).
+
+```bat
+:: Access files recovered by an older version ("Unrecognized database format"): no need to start again
+mike24_recovery.exe "D:\recovered" "E:\tables" --extract-mdb --mdb-template "C:\App\Data.mdb"
+
+:: Full run with a template (Access files get CSV + open-able copy automatically)
+mike24_recovery.exe "D:\data" "E:\recovered" --mdb-template "C:\App\Data.mdb" "C:\App\Front.accde"
+```
+
+Things to know:
+
+- `[LOST]` in a CSV cell = a memo/attachment value that was stored in the encrypted part.
+- Rows rejected when building the open-able copy (for example duplicate primary keys from old row versions that Access
+  had already discarded) are counted in `_make_mdb.log`. The CSV files always contain every row that was read.
+- The open-able copy needs Windows PowerShell and the Access/Jet engine. If it cannot be built (e.g. no engine for an
+  `.accdb` template), the CSV files are still complete and `make_mdb.ps1` is left in the folder to run later.
+- Access 97 (Jet3, 2 KB pages) files: rebuild only, no table extraction.
+- `.accde` / `.mde` front-ends: tables can be recovered, forms/reports/VBA code cannot. Reinstall the front-end from
+  the application installer instead.
+
 ### From source (any OS, Python 3.8+, standard library only)
 
 ```bash
@@ -111,6 +156,9 @@ python mike24_recovery.py "D:\data" "E:\recovered"
 | `--on-disk` (`--same-disk`) | Allow the output on the same disk as the data. See *Same-disk warning* below. |
 | `--force` | Continue even if the estimated free space is not enough (files that do not fit are marked `SKIPPED`). |
 | `--head-mb N` / `--tail-mb N` | Size of the encrypted leading / trailing zones (default 4 / 4). Only change this if your samples show a different pattern. |
+| `--extract-mdb` | Input is a folder (or one file) of Access files **already recovered** by an earlier run: extract their tables and build the open-able copy. No `.mike24` needed. |
+| `--mdb-template MDB [MDB ...]` | Healthy database(s) of the same application, for real column names/types. Put this option **last** on the command line. |
+| `--no-make-mdb` | Only write CSV files, do not build `<name>_RECOVERED.mdb`. |
 | `--no-banner` | Do not print the banner (useful in scripts and logs). |
 | `--version` | Print the version. |
 
@@ -119,7 +167,9 @@ python mike24_recovery.py "D:\data" "E:\recovered"
 ```
 E:\recovered\
 ├── recovered\          recovered data, same folder structure as the input
-│   ├── ...\Database.mdb              rebuilt file (encrypted zones = zeros)
+│   ├── ...\Database.mdb              rebuilt file (encrypted zones = zeros, does not open in Access)
+│   ├── ...\Database_RECOVERED.mdb    open-able copy built from the recovered tables (Windows)
+│   ├── ...\Database.mdb_tables\      one CSV per table, _tables.txt, _schema.json, make_mdb.ps1
 │   ├── ...\Backup_RECOVERED.rar      intact RAR entries, re-packed
 │   └── ...\Report.xlsx_contents\     intact files from inside a ZIP/Office file
 ├── original_copies\    originals found with --find-copies
@@ -154,7 +204,9 @@ have different IDs.
 
 - Not a decryptor: the encrypted head and tail of every file are **lost** without the attacker's key.
 - Fully encrypted (small) files cannot be recovered from the file itself.
-- Rebuilt Access databases lose their first pages (schema); use an Access repair or table-extraction tool afterwards.
+- Access: rows stored in the first/last ~4 MB are lost, and so is the table catalog. Without a template, tables whose
+  definition was lost get guessed column names; deleted rows that were still physically present can come back as
+  duplicates (they are rejected by primary keys when the open-able copy is built).
 - RAR entries stored in the encrypted zones, and solid RAR archives, cannot be salvaged.
 - The 4 MB zone sizes match the samples analysed so far. Other builds of the ransomware may use different values
   (`--head-mb` / `--tail-mb`).
@@ -177,7 +229,10 @@ docker run --rm --network none -v "$PWD":/src batonogov/pyinstaller-windows:late
 ```
 
 The release build was checked by running both the `.exe` (under Wine) and the `.py` on the same synthetic test set
-(ZIP, RAR4, RAR5, solid RAR5, Access Jet3/ACE, fully encrypted files): all 29 output files were byte-identical.
+(ZIP, RAR4, RAR5, solid RAR5, Access Jet3/ACE, fully encrypted files): all output files were byte-identical.
+Table extraction was checked against synthetic Access 2000 and Access 2010 databases (500,000+ rows, all column
+types): on undamaged files every row matches exactly; with the first and last 4 MB destroyed and a template given,
+no wrong values were produced (80-94% of the rows recovered, the rest was in the destroyed part).
 
 ## If you were hit by `.mike24`
 
