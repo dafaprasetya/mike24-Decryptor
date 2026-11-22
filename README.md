@@ -41,7 +41,7 @@ reads the header of **every** file, so it never guesses from the file size alone
 |---|---|
 | ZIP / XLSX / DOCX / PPTX / ODT … | Every inner file that is still intact is extracted (CRC-verified). Files stored inside the first 4 MB are lost. |
 | RAR (RAR4 / RAR5) | The intact entries are re-packed into a new `*_RECOVERED.rar` that extracts without errors in WinRAR / 7-Zip. Entries cut by the encrypted end are left out and listed in the report. **Solid** archives cannot be salvaged this way and are flagged. |
-| Access (`.mdb` `.mde` `.accdb` `.accde`) | Every table that is still readable is written to CSV (`<name>_tables\`), and on Windows an **open-able copy `<name>_RECOVERED.mdb`** is built from it (see [Access databases](#access-databases)). The zero-filled rebuild is also kept, but Access cannot open it: its first pages (header and table catalog) are lost. |
+| Access (`.mdb` `.mde` `.accdb` `.accde`) | Every table that is still readable is extracted and, on Windows, an **open-able copy `<name>_RECOVERED.mdb`** is built from it (see [Access databases](#access-databases)). To save space the intermediate build files are then removed (`--keep-build-file` keeps them). |
 | Anything else | Rebuilt the same way (encrypted zones = zeros). Useful for databases, disk images, video, large logs, etc. |
 
 ## Download
@@ -57,8 +57,8 @@ Get-FileHash .\mike24_recovery.exe -Algorithm SHA256
 
 | File | Version | SHA-256 |
 |---|---|---|
-| `mike24_recovery.exe` | 3.2 | `fb3f75be7fac472c6e80cf64f7c62145cb66e4c2fe0e5affa3138be294dddce3` |
-| `mike24_recovery.py` | 3.2 | `342dc4bdb3a80dd770271b41aa90aaf14bc93bec53d44727e8618363702162a5` |
+| `mike24_recovery.exe` | 3.2.3 | `4b1b86b7fb8a93596ac2f726f0db62f3f8a26390e4ddfae626b6077ef0fc45cf` |
+| `mike24_recovery.py` | 3.2.3 | `879c3d1f3e32f4e766601b4e2f5bfa59d31e41d00b988504ce660990d4f17267` |
 
 The `.exe` is a PyInstaller build of `mike24_recovery.py` and is **not code-signed**. Some antivirus engines flag
 unsigned PyInstaller executables. If that happens, run the Python script instead (below) or build the `.exe` yourself.
@@ -130,6 +130,11 @@ Things to know:
 - `[LOST]` in a CSV cell = a memo/attachment value that was stored in the encrypted part.
 - Rows rejected when building the open-able copy (for example duplicate primary keys from old row versions that Access
   had already discarded) are counted in `_make_mdb.log`. The CSV files always contain every row that was read.
+- **Disk space.** Once `<name>_RECOVERED.*` is built, the build files are cleaned up: the zero-filled rebuild (which
+  Access cannot open anyway) is not written, and the CSV folder is deleted - or zipped to `<name>_tables.zip` when
+  Access rejected some rows, so no row is lost. A short summary stays as `<name>_tables.txt`. If the copy cannot be
+  built (no Windows / no Access engine), everything is kept so the copy can be built later.
+  `--keep-build-file` keeps the rebuild and the CSV folder. The `.mike24` input files are never modified or deleted.
 - The open-able copy needs Windows PowerShell and the Access/Jet engine. If it cannot be built (e.g. no engine for an
   `.accdb` template), the CSV files are still complete and `make_mdb.ps1` is left in the folder to run later.
 - Access 97 (Jet3, 2 KB pages) files: rebuild only, no table extraction.
@@ -159,6 +164,8 @@ python mike24_recovery.py "D:\data" "E:\recovered"
 | `--extract-mdb` | Input is a folder (or one file) of Access files **already recovered** by an earlier run: extract their tables and build the open-able copy. No `.mike24` needed. |
 | `--mdb-template MDB [MDB ...]` | Healthy database(s) of the same application, for real column names/types. Put this option **last** on the command line. |
 | `--no-make-mdb` | Only write CSV files, do not build `<name>_RECOVERED.mdb`. |
+| `--keep-build-file` | Access files: keep the zero-filled rebuild and the CSV folder after the open-able copy is built (by default they are removed to save space). |
+| `--delete-raw` | With `--extract-mdb`: delete each zero-filled rebuilt input file after its open-able copy was built (cleans up the output of older versions). Healthy databases and `.mike24` files are never deleted. |
 | `--no-banner` | Do not print the banner (useful in scripts and logs). |
 | `--version` | Print the version. |
 
@@ -167,9 +174,10 @@ python mike24_recovery.py "D:\data" "E:\recovered"
 ```
 E:\recovered\
 ├── recovered\          recovered data, same folder structure as the input
-│   ├── ...\Database.mdb              rebuilt file (encrypted zones = zeros, does not open in Access)
 │   ├── ...\Database_RECOVERED.mdb    open-able copy built from the recovered tables (Windows)
-│   ├── ...\Database.mdb_tables\      one CSV per table, _tables.txt, _schema.json, make_mdb.ps1
+│   ├── ...\Database.mdb_tables.txt   summary per table (rows, how the columns were identified)
+│   ├── ...\Database.mdb_tables.zip   CSV, only if Access rejected rows (or a folder with --keep-build-file /
+│   │                                  when the copy could not be built, plus make_mdb.ps1 to build it later)
 │   ├── ...\Backup_RECOVERED.rar      intact RAR entries, re-packed
 │   └── ...\Report.xlsx_contents\     intact files from inside a ZIP/Office file
 ├── original_copies\    originals found with --find-copies
